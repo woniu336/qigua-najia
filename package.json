@@ -1,0 +1,15 @@
+{
+  "name": "qigua-najia",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "起卦入口与纳甲六爻断卦 Skill（梅花两法 + 外部卦象标准化 + 内置纳甲引擎）",
+  "algorithm_version": "qigua-najia-v1",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "lunar-javascript": "1.7.7"
+  },
+  "license": "MIT"
+}
