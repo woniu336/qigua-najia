@@ -35,9 +35,14 @@
     "is_static": false                              // ORIGINAL_STATIC 时必须为 true
   },
 
-  // ── 三种入口都必填 ───────────────────────────────────────────
+  // ── 排盘基准：二选一（公历时间 或 干支直输），不是两个都要 ─────
   "najia_cast_at": "2025-01-16 15:30",            // 或 "now"；历史卦必须填原始起卦时间
   "najia_timezone": "Asia/Shanghai",
+  // 或者（用户只给「申月 丙子日」时用这组，给了就不需要上面两个）：
+  // "najia_ganzhi": "申月 丙子日",              // 也接受 "乙巳年 甲申月 丙子日 申时"
+  // "najia_month_branch": "申", "najia_day_gz": "丙子",
+  // "najia_year_gz": "乙巳",                    // 可选，仅显示
+  // "najia_hour_branch": "申",                  // 可选，装卦不使用时支
   "najia_time_source": "现场自动记录 / 用户手动填写 / 第三方记录 / 来源不明"
 }
 ```
@@ -49,6 +54,11 @@
 - 外部输入**不得**带 `meihua_reference_time`（`INVALID_INPUT`）。
 - `najia_cast_at` 缺省仅在 `MEIHUA_TIME` 时回退为 `meihua_reference_time`；其余入口缺失即 `INVALID_INPUT`。
 - 时区缺省一律 `INVALID_INPUT`（绝不使用运行机器的本地时区）。
+- **干支直输**：`najia_ganzhi`（或 `najia_month_branch` + `najia_day_gz`）可直接给月建与日柱，
+  **不需要公历日期**；`solar`/`lunar` 记为「未提供（按用户给定干支直接排盘）」，
+  `najia_baseline.time_source_kind = "GANZHI_DIRECT"`，`month_build_source` 写「用户直接给定的干支」。
+  与 `najia_cast_at` 同时给且矛盾（月建/日柱/年柱/时支）→ `INVALID_INPUT`，不替用户择一。
+  梅花两法不得用干支直输（梅花取数需要农历年月日时）。
 
 ### 1.1 CLI 参数 ↔ JSON 字段
 
@@ -60,6 +70,8 @@
 | `--numbers 5 3` | `source_method=MEIHUA_TWO_NUMBERS` + `two_numbers` |
 | `--external a.json` / `--external '{"...":...}'` / `--external -` | `external` |
 | `--najia-cast-at "..."` | `najia_cast_at` |
+| `--najia-ganzhi "申月 丙子日"` | `najia_ganzhi`（干支直输，无需公历日期） |
+| `--najia-month 申` / `--najia-day 丙子` / `--najia-year 乙巳` / `--najia-hour 申` | 对应分项字段 |
 | `--najia-tz <IANA>` | `najia_timezone` |
 | `--najia-time-source "..."` | `najia_time_source` |
 | `--now` | 把缺失的 `najia_cast_at` 填 `now`（显式声明） |
@@ -96,8 +108,9 @@
 
   "time_bases": {
     "meihua_reference_time": { "input": "...", "timezone": "...", "wall_clock": "...", "utc": "..." },  // 外部输入为 null
-    "najia_cast_at": { "input": "...", "timezone": "...", "wall_clock": "...", "utc": "...",
+    "najia_cast_at": { "kind": "WALL_CLOCK", "input": "...", "timezone": "...", "wall_clock": "...", "utc": "...",
                        "resolved_from": "...", "dst_ambiguous": false, "source_note": null },
+    // 干支直输时：{ "kind": "GANZHI_DIRECT", "input": "申月 丙子日", "timezone": null, "wall_clock": null, "utc": null }
     "same_moment": true
   },
 

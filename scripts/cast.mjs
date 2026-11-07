@@ -16,7 +16,7 @@
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { castLiuyao, trigramsOfBinary } from './engine/najia.mjs';
-import { castTimeInfo, buildLiuyaoInput } from './engine/ganzhi.mjs';
+import { castTimeInfo, ganzhiTimeInfo, buildLiuyaoInput } from './engine/ganzhi.mjs';
 import { buildLiuyaoReadingFacts } from './engine/facts.mjs';
 import { castMeihuaTime, castMeihuaTwoNumbers } from './meihua.mjs';
 import { normalizeExternal } from './external.mjs';
@@ -150,6 +150,59 @@ function instantFromWallClock(wc, timezone, label) {
  *   - wall_clock_date Date，其**本地字段**恰好等于墙上时间（供 lunar-javascript 做农历换算，
  *                     从而不与运行机器的本地时区耦合）
  */
+/**
+ * 把「干支直输」的各种写法归一化成一个 spec：
+ *   najia_ganzhi: "乙巳年 甲申月 丙子日 申时" | {year_gz, month_gz, day_gz, hour_gz}
+ *   najia_ganzhi: "申月 丙子日"
+ *   或分项 najia_month_branch / najia_month_gz / najia_day_gz / najia_year_gz / najia_hour_branch
+ * 没有任何干支字段时返回 null。
+ */
+export function normalizeGanzhiSpec(input) {
+  const raw = input.najia_ganzhi ?? input.ganzhi ?? null;
+  let spec = {};
+  if (typeof raw === 'string' && raw.trim()) {
+    const text = raw.trim();
+    const mYear = text.match(/([甲乙丙丁戊己庚辛壬癸][子丑寅卯辰巳午未申酉戌亥])\s*年/);
+    const mMonth = text.match(/([甲乙丙丁戊己庚辛壬癸][子丑寅卯辰巳午未申酉戌亥])\s*月/);
+    const mMonthBranch = text.match(/(?:^|[\s])([子丑寅卯辰巳午未申酉戌亥])\s*月/);
+    const mDay = text.match(/([甲乙丙丁戊己庚辛壬癸][子丑寅卯辰巳午未申酉戌亥])\s*日/);
+    const mHour = text.match(/([甲乙丙丁戊己庚辛壬癸][子丑寅卯辰巳午未申酉戌亥]|[子丑寅卯辰巳午未申酉戌亥])\s*时/);
+    if (mYear) spec.yearGz = mYear[1];
+    if (mMonth) spec.monthGz = mMonth[1];
+    else if (mMonthBranch) spec.monthBranch = mMonthBranch[1];
+    if (mDay) spec.dayGz = mDay[1];
+    if (mHour) {
+      const h = mHour[1];
+      if (h.length === 2) spec.hourGz = h;
+      else spec.hourBranch = h;
+    }
+  } else if (raw && typeof raw === 'object') {
+    spec = {
+      yearGz: raw.year_gz ?? raw.yearGz ?? undefined,
+      monthGz: raw.month_gz ?? raw.monthGz ?? undefined,
+      monthBranch: raw.month_branch ?? raw.monthBranch ?? undefined,
+      dayGz: raw.day_gz ?? raw.dayGz ?? undefined,
+      hourGz: raw.hour_gz ?? raw.hourGz ?? undefined,
+      hourBranch: raw.hour_branch ?? raw.hourBranch ?? undefined,
+    };
+  }
+  // 分项字段（与上面的对象写法合并，分项优先补齐缺项）
+  const pick = (a, b) => a ?? b;
+  spec.yearGz = pick(spec.yearGz, input.najia_year_gz);
+  spec.monthGz = pick(spec.monthGz, input.najia_month_gz);
+  spec.monthBranch = pick(spec.monthBranch, input.najia_month_branch);
+  spec.dayGz = pick(spec.dayGz, input.najia_day_gz);
+  spec.hourGz = pick(spec.hourGz, input.najia_hour_gz);
+  spec.hourBranch = pick(spec.hourBranch, input.najia_hour_branch);
+  const has = Object.values(spec).some((v) => v !== undefined && v !== null && String(v).trim() !== '');
+  if (!has) return null;
+  if (!spec.dayGz) fail(INVALID_INPUT, '干支直输缺少日柱（najia_day_gz，如 "丙子"）');
+  if (!spec.monthGz && !spec.monthBranch) {
+    fail(INVALID_INPUT, '干支直输缺少月建（najia_month_branch 如 "申"，或 najia_month_gz 如 "甲申"）');
+  }
+  return spec;
+}
+
 export function resolveMoment(value, timezone, label) {
   if (value === undefined || value === null || String(value).trim() === '') {
     fail(INVALID_INPUT, `缺少 ${label}（时间是排盘必需项，不得以当前时间或设备时区替代）`);
@@ -346,18 +399,53 @@ export function runCast(input) {
     hexagram = buildHexagramForExternal(external);
   }
 
-  /* --- 纳甲排盘基准时间（所有来源都必须有） --- */
+  /* --- 纳甲排盘基准：干支直输 或 公历时间（所有来源都必须有其一） --- */
   const najiaCastAtRaw = input.najia_cast_at ?? input.najia_cast_time;
   const najiaTzRaw = input.najia_timezone ?? input.timezone ?? input.meihua_timezone;
+  const ganzhiSpec = normalizeGanzhiSpec(input);
 
-  const najiaMoment = resolveMoment(
-    najiaCastAtRaw ?? (sourceMethod === 'MEIHUA_TIME' ? meihuaMoment.input : undefined),
-    najiaTzRaw,
-    '纳甲起卦时间（najia_cast_at）',
-  );
-
-  /* --- 调纳甲引擎 --- */
-  const time = castTimeInfo(najiaMoment.wall_clock_date);
+  let najiaMoment = null;
+  let time;
+  if (ganzhiSpec) {
+    if (sourceMethod === 'MEIHUA_TIME') {
+      fail(
+        INVALID_INPUT,
+        '梅花时间法必须用公历时间取数（农历年支/月/日/时支），不能改用干支直输；干支直输只用于纳甲装卦',
+      );
+    }
+    try {
+      time = ganzhiTimeInfo(ganzhiSpec);
+    } catch (e) {
+      fail(INVALID_INPUT, `干支直输不合法：${e.message}`);
+    }
+    // 若同时给了公历时间，必须与干支一致，否则不猜、直接报错
+    if (najiaCastAtRaw && String(najiaCastAtRaw).trim().toLowerCase() !== 'now') {
+      const derived = castTimeInfo(
+        resolveMoment(najiaCastAtRaw, najiaTzRaw ?? 'Asia/Shanghai', '纳甲起卦时间（najia_cast_at）').wall_clock_date,
+      );
+      const diffs = [];
+      if (derived.monthBranch !== time.monthBranch) {
+        diffs.push(`月建：时间推出 ${derived.monthBranch}，输入写 ${time.monthBranch}`);
+      }
+      if (derived.dayGz !== time.dayGz) diffs.push(`日柱：时间推出 ${derived.dayGz}，输入写 ${time.dayGz}`);
+      if (time.yearGz && derived.yearGz !== time.yearGz) {
+        diffs.push(`年柱：时间推出 ${derived.yearGz}，输入写 ${time.yearGz}`);
+      }
+      if (time.hourBranch && derived.hourBranch !== time.hourBranch) {
+        diffs.push(`时支：时间推出 ${derived.hourBranch}，输入写 ${time.hourBranch}`);
+      }
+      if (diffs.length) {
+        fail(INVALID_INPUT, `干支与 najia_cast_at 不一致（不替用户择一）：${diffs.join('；')}`);
+      }
+    }
+  } else {
+    najiaMoment = resolveMoment(
+      najiaCastAtRaw ?? (sourceMethod === 'MEIHUA_TIME' ? meihuaMoment.input : undefined),
+      najiaTzRaw,
+      '纳甲起卦时间（najia_cast_at）',
+    );
+    time = castTimeInfo(najiaMoment.wall_clock_date);
+  }
   const chart = castLiuyao(buildLiuyaoInput(time, hexagram.line_values_bottom_up));
   const consistency = assertEngineMatches(chart, hexagram);
   const facts = buildLiuyaoReadingFacts(chart, time, question);
@@ -419,17 +507,29 @@ export function runCast(input) {
             utc: meihuaMoment.instant_iso,
           }
         : null,
-      najia_cast_at: {
-        input: najiaMoment.input,
-        timezone: najiaMoment.timezone,
-        wall_clock: najiaMoment.wall_clock,
-        utc: najiaMoment.instant_iso,
-        resolved_from: najiaMoment.resolved_from,
-        dst_ambiguous: najiaMoment.dst_ambiguous,
-        source_note: source.najia_time_source,
-      },
+      najia_cast_at: najiaMoment
+        ? {
+            kind: 'WALL_CLOCK',
+            input: najiaMoment.input,
+            timezone: najiaMoment.timezone,
+            wall_clock: najiaMoment.wall_clock,
+            utc: najiaMoment.instant_iso,
+            resolved_from: najiaMoment.resolved_from,
+            dst_ambiguous: najiaMoment.dst_ambiguous,
+            source_note: source.najia_time_source,
+          }
+        : {
+            kind: 'GANZHI_DIRECT',
+            input: time.ganzhiText,
+            timezone: null,
+            wall_clock: null,
+            utc: null,
+            resolved_from: '用户直接给定干支（未用公历时间推算）',
+            dst_ambiguous: false,
+            source_note: source.najia_time_source,
+          },
       same_moment:
-        meihuaMoment !== null && meihuaMoment.instant_iso === najiaMoment.instant_iso,
+        meihuaMoment !== null && najiaMoment !== null && meihuaMoment.instant_iso === najiaMoment.instant_iso,
     },
     meihua: meihuaPayload,
     external,
@@ -448,6 +548,7 @@ export function runCast(input) {
       order_convention: '爻值数组与二进制均为初爻→上爻（自下而上）；动爻位置 1=初爻 … 6=上爻',
     },
     najia_baseline: {
+      time_source_kind: time.time_source_kind ?? 'WALL_CLOCK',
       solar: time.solarText,
       lunar: time.lunarText,
       ganzhi: time.ganzhiText,
@@ -458,7 +559,10 @@ export function runCast(input) {
       month_branch: time.monthBranch,
       day_branch: time.dayGz.slice(-1),
       hour_branch: time.hourBranch,
-      month_build_source: '节气月（纳甲口径；与梅花取数用的农历月无关）',
+      month_build_source:
+        (time.time_source_kind ?? 'WALL_CLOCK') === 'GANZHI_DIRECT'
+          ? '用户直接给定的干支（月建与日柱不来自公历推算）'
+          : '节气月（纳甲口径；与梅花取数用的农历月无关）',
     },
     consistency,
     facts,
@@ -494,7 +598,11 @@ function renderSourceBlock(r) {
   }
   lines.push('');
   lines.push('=== 纳甲排盘基准 ===');
-  lines.push(`纳甲起卦时间：${tb.najia_cast_at.wall_clock}（${tb.najia_cast_at.timezone}，UTC ${tb.najia_cast_at.utc}）`);
+  lines.push(
+    tb.najia_cast_at.kind === 'GANZHI_DIRECT'
+      ? `纳甲排盘基准：干支直输 ${tb.najia_cast_at.input}（月建与日柱由用户给定，不来自公历推算）`
+      : `纳甲起卦时间：${tb.najia_cast_at.wall_clock}（${tb.najia_cast_at.timezone}，UTC ${tb.najia_cast_at.utc}）`,
+  );
   if (s.source_method === 'MEIHUA_TIME') {
     lines.push(`梅花取数时间：${tb.meihua_reference_time.wall_clock}（${tb.meihua_reference_time.timezone}）`);
     lines.push(
@@ -646,6 +754,23 @@ function parseArgs(argv) {
       case '--question':
         args.question = next();
         break;
+      case '--najia-ganzhi':
+        args.najiaGanzhi = next();
+        break;
+      case '--najia-month':
+      case '--month-branch':
+        args.najiaMonthBranch = next();
+        break;
+      case '--najia-day':
+      case '--day-gz':
+        args.najiaDayGz = next();
+        break;
+      case '--najia-year':
+        args.najiaYearGz = next();
+        break;
+      case '--najia-hour':
+        args.najiaHourBranch = next();
+        break;
       case '--najia-cast-at':
       case '--najia-time':
         args.najiaCastAt = next();
@@ -719,6 +844,7 @@ export function inputFromArgs(args) {
     !args.numbers &&
     args._.length === 0 &&
     !args.now &&
+    !args.najiaGanzhi &&
     !args.question
   ) {
     args._.push('-');
@@ -737,6 +863,11 @@ export function inputFromArgs(args) {
     if (args.najiaCastAt) parsed.najia_cast_at = args.najiaCastAt;
     if (args.najiaTz) parsed.najia_timezone = args.najiaTz;
     if (args.najiaTimeSource) parsed.najia_time_source = args.najiaTimeSource;
+    if (args.najiaGanzhi) parsed.najia_ganzhi = args.najiaGanzhi;
+    if (args.najiaMonthBranch) parsed.najia_month_branch = args.najiaMonthBranch;
+    if (args.najiaDayGz) parsed.najia_day_gz = args.najiaDayGz;
+    if (args.najiaYearGz) parsed.najia_year_gz = args.najiaYearGz;
+    if (args.najiaHourBranch) parsed.najia_hour_branch = args.najiaHourBranch;
     if (parsed.source_method) return parsed;
     // 允许只给 external 对象
     if (parsed.external || parsed.input_mode || parsed.six_line_values || parsed.original_hexagram) {
@@ -764,7 +895,20 @@ export function inputFromArgs(args) {
     fail(INVALID_INPUT, 'JSON 里没有可识别的入口字段（source_method / external / two_numbers / meihua_reference_time）');
   }
 
-  const base = { question: args.question ?? '' };
+  const ganzhiFromArgs = (() => {
+    const spec = {
+      najia_ganzhi: args.najiaGanzhi,
+      najia_month_branch: args.najiaMonthBranch,
+      najia_day_gz: args.najiaDayGz,
+      najia_year_gz: args.najiaYearGz,
+      najia_hour_branch: args.najiaHourBranch,
+    };
+    const has = Object.values(spec).some((v) => v !== undefined);
+    if (!has) return {};
+    return Object.fromEntries(Object.entries(spec).filter(([, v]) => v !== undefined));
+  })();
+
+  const base = { question: args.question ?? '', ...ganzhiFromArgs };
 
   // 2) 外部卦象：--external 文件、内联 JSON 或 stdin
   if (args.external !== undefined) {
@@ -778,6 +922,7 @@ export function inputFromArgs(args) {
       ...base,
       source_method: 'EXTERNAL_HEXAGRAM_INPUT',
       external: externalObj,
+      ...ganzhiFromArgs,
       najia_cast_at: args.najiaCastAt ?? (args.now ? 'now' : undefined),
       najia_timezone: args.najiaTz ?? args.tz,
       najia_time_source: args.najiaTimeSource,
@@ -828,6 +973,12 @@ const HELP = `起卦入口与纳甲六爻断卦 CLI（qigua-najia-v1）
   --tz <IANA>             时区，必填，不得省略（不用当前设备时区兜底）
   --numbers <A> <B>       梅花两数法（两个正整数）
   --external <path|JSON|-> 外部卦象输入（六爻爻值 / 本卦+变卦 / 本卦+动爻 / 本卦+静卦）
+  --najia-ganzhi <str>    干支直输（如 "申月 丙子日" / "乙巳年 甲申月 丙子日 申时"），
+                          给了它就不用 najia-cast-at，也不再需要公历日期
+  --najia-month <支>      月建（如 申），配合 --najia-day 使用
+  --najia-day <干支>      日柱（如 丙子）
+  --najia-year <干支>     年柱（可选，仅显示用）
+  --najia-hour <支|干支>  时支（可选）
   --najia-cast-at <str>   纳甲排盘基准时间（外部与两数入口必填；也接受 now）
   --najia-tz <IANA>       纳甲时区（缺省沿用 --tz）
   --najia-time-source <s> 该时间的来源说明（现场自动记录/用户填写/第三方记录/来源不明）

@@ -544,3 +544,112 @@ test('H4 CLI 失败关闭：退出码 2 + 错误码', () => {
   assert.match(res.stderr, /MISSING_CHANGE_INFORMATION/);
   assert.match(res.stderr, /fail_closed/);
 });
+
+/* ================================================================== */
+/* 干支直输（najia_ganzhi）：用户只给「申月 丙子日」也能直接排盘         */
+/* ================================================================== */
+
+const MINGYI = { input_mode: 'ORIGINAL_PLUS_CHANGED', original_hexagram: '地火明夷', changed_hexagram: '雷山小过' };
+
+test('G1 干支直输与公历时间排出的盘完全一致（月建/日辰/旬空/六神）', () => {
+  const byGanzhi = runCast({
+    source_method: 'EXTERNAL_HEXAGRAM_INPUT',
+    external: MINGYI,
+    najia_ganzhi: '申月 丙子日',
+    question: '占出行',
+  });
+  const byClock = runCast({
+    source_method: 'EXTERNAL_HEXAGRAM_INPUT',
+    external: MINGYI,
+    najia_cast_at: '2025-09-04 15:30',
+    najia_timezone: TZ,
+    question: '占出行',
+  });
+  assert.equal(byGanzhi.najia_baseline.time_source_kind, 'GANZHI_DIRECT');
+  assert.equal(byClock.najia_baseline.time_source_kind, 'WALL_CLOCK');
+  assert.equal(byGanzhi.najia_baseline.month_branch, byClock.najia_baseline.month_branch);
+  assert.equal(byGanzhi.najia_baseline.day_gz, byClock.najia_baseline.day_gz);
+  assert.equal(byGanzhi.facts.voidBranches.join(''), byClock.facts.voidBranches.join(''));
+  assert.deepEqual(
+    byGanzhi.facts.lines.map((l) => `${l.position}${l.sixGod}${l.relation}${l.najia}`),
+    byClock.facts.lines.map((l) => `${l.position}${l.sixGod}${l.relation}${l.najia}`),
+  );
+  assert.equal(byGanzhi.najia_baseline.month_branch, '申');
+  assert.equal(byGanzhi.najia_baseline.day_gz, '丙子');
+  assert.equal(byGanzhi.facts.voidBranches.join(''), '申酉');
+  assert.equal(byGanzhi.hexagram.original_hexagram_name, '地火明夷');
+  assert.equal(byGanzhi.hexagram.changed_hexagram_name, '雷山小过');
+});
+
+test('G2 干支直输：分项写法 / 月柱写法 / 带年柱', () => {
+  const a = runCast({
+    source_method: 'EXTERNAL_HEXAGRAM_INPUT',
+    external: MINGYI,
+    najia_month_branch: '申',
+    najia_day_gz: '丙子',
+  });
+  const b = runCast({
+    source_method: 'EXTERNAL_HEXAGRAM_INPUT',
+    external: MINGYI,
+    najia_ganzhi: '乙巳年 甲申月 丙子日',
+  });
+  assert.equal(a.najia_baseline.month_branch, '申');
+  assert.equal(b.najia_baseline.month_branch, '申');
+  assert.equal(b.najia_baseline.year_gz, '乙巳');
+  assert.equal(b.najia_baseline.time_source_kind, 'GANZHI_DIRECT');
+  assert.match(b.facts.time.ganzhi, /乙巳年 甲申月 丙子日/);
+});
+
+test('G3 干支与公历时间矛盾 → INVALID_INPUT，不替用户择一', () => {
+  assert.throws(
+    () =>
+      runCast({
+        source_method: 'EXTERNAL_HEXAGRAM_INPUT',
+        external: MINGYI,
+        najia_ganzhi: '申月 丙子日',
+        najia_cast_at: '2025-01-16 15:30', // 丁丑月
+        najia_timezone: TZ,
+      }),
+    /INVALID_INPUT[\s\S]*不一致|不一致[\s\S]*INVALID_INPUT/,
+  );
+});
+
+test('G4 干支直输缺月建 / 格式错 → INVALID_INPUT', () => {
+  assert.throws(
+    () => runCast({ source_method: 'EXTERNAL_HEXAGRAM_INPUT', external: MINGYI, najia_ganzhi: '丙子日' }),
+    /缺少月建/,
+  );
+  assert.throws(
+    () => runCast({ source_method: 'EXTERNAL_HEXAGRAM_INPUT', external: MINGYI, najia_ganzhi: '申月 丙X日' }),
+    /缺少日柱|不合法/,
+  );
+});
+
+test('G5 梅花时间法不得改用干支直输（梅花取数需要农历年月日）', () => {
+  assert.throws(
+    () =>
+      runCast({
+        source_method: 'MEIHUA_TIME',
+        meihua_reference_time: '2025-01-16 15:30',
+        meihua_timezone: TZ,
+        najia_ganzhi: '申月 丙子日',
+      }),
+    /梅花时间法必须用公历时间取数/,
+  );
+});
+
+test('G6 CLI：--external + --najia-ganzhi，无需公历日期', () => {
+  const res = cli([
+    '--external',
+    JSON.stringify(MINGYI),
+    '--najia-ganzhi',
+    '申月 丙子日',
+    '--question',
+    '占出行',
+  ]);
+  assert.equal(res.status, 0, res.stderr);
+  assert.match(res.stdout, /干支直输 申月 丙子日/);
+  assert.match(res.stdout, /月建 申/);
+  assert.match(res.stdout, /日辰 丙子/);
+  assert.match(res.stdout, /旬空 申酉/);
+});

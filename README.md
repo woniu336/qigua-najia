@@ -15,6 +15,7 @@
 - **确定性装卦**：纳甲、世应、六亲、六神、旬空、月破、伏神、神煞（十三种）、月卦身、卦爻辞
 - **零心算**：取数、余数、上下卦、动爻、变卦、动爻识别全部由代码完成，模型不得猜卦、不得反推爻画
 - **失败关闭**：输入不完整或自相矛盾就报错停下，不让模型替你补数据
+- **够了就别问**：卦象 + 时间（公历或干支）+ 事由齐了就直接排盘；给干支时不需要公历日期
 - **断卦规范全文内置**：`references/duangua-prompt.md`（24 章，约 5.9 万字），整份发送、不做关键词选章
 
 ## 快速开始
@@ -64,6 +65,15 @@ node scripts/cast.mjs --external '{"input_mode":"ORIGINAL_PLUS_MOVING_LINES","or
 node scripts/cast.mjs --external '{"input_mode":"ORIGINAL_STATIC","original_hexagram":"水火既济","is_static":true}' \
   --najia-cast-at "2025-01-16 15:30" --najia-tz Asia/Shanghai
 ```
+
+### 4. 干支直输（只给「月建 + 日柱」，无需公历日期）
+
+```bash
+node scripts/cast.mjs   --external '{"input_mode":"ORIGINAL_PLUS_CHANGED","original_hexagram":"地火明夷","changed_hexagram":"雷山小过"}'   --najia-ganzhi "申月 丙子日"   --question "占出行"
+```
+
+月建 申 / 日辰 丙子 / 旬空 申酉 / 六神按日干起（丙日初爻朱雀），与用公历时间排出的盘逐字一致。
+也支持分项：`--najia-month 申 --najia-day 丙子 --najia-hour 申`。
 
 `--format json` 只输出 JSON；`--out result.json` 写文件；`--file input.json` 或 stdin 读整份输入。
 
